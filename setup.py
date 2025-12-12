@@ -10,7 +10,7 @@ setup(
     name="cn_clip",
     py_modules=["cn_clip"],
     version="1.5.1",
-    author="OFA-Sys",
+    author="miznchimaki",
     author_email="",
     long_description=long_description,
     long_description_content_type="text/markdown",
@@ -35,6 +35,6 @@ setup(
                 ('clip/', ['cn_clip/clip/vocab.txt'])
                 ],
     include_package_data=True,
-    url='https://github.com/OFA-Sys/Chinese-CLIP',
+    url='https://github.com/miznchimaki/Chinese-CLIP',
     description='the Chinese version of CLIP.'
 )

@@ -3,6 +3,9 @@ wandb/
 models/
 features/
 results/
+datasets/
+pretrained_weights/
+epoch*.pt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

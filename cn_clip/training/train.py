@@ -7,7 +7,7 @@ from tqdm import tqdm
 
 import torch
 import torch.nn as nn
-from torch.cuda.amp import autocast
+from torch.amp import autocast
 import torch.distributed.nn
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -187,7 +187,7 @@ def train(model, data, epoch, optimizer, scaler, scheduler, args, global_trained
         if args.accum_freq == 1:
             # with automatic mixed precision.
             if args.precision == "amp":
-                with autocast():
+                with autocast(device_type='cuda'):
                     if args.distillation:
                         total_loss, acc = get_loss(model, images, texts, loss_img, loss_txt, args, teacher_model=teacher_model)
                     else:
@@ -206,7 +206,7 @@ def train(model, data, epoch, optimizer, scaler, scheduler, args, global_trained
         else:
             # First, cache the features without any gradient tracking.
             with torch.no_grad():
-                with autocast(enabled=(args.precision == "amp")):
+                with autocast(device_type='cuda', enabled=(args.precision == "amp")):
                     chunk_image_features, chunk_text_features, _ = model(images, texts)
                 if args.distillation:
                     output = teacher_model.module.get_feature(images)
@@ -234,7 +234,7 @@ def train(model, data, epoch, optimizer, scaler, scheduler, args, global_trained
             for j in range(args.accum_freq):
                 images = accum_images[j]
                 texts = accum_texts[j]
-                with autocast(enabled=(args.precision == "amp")):
+                with autocast(device_type='cuda', enabled=(args.precision == "amp")):
                     # `total_loss` and `acc` are coarsely sampled, taking only the last result in the loop.
                     # Although each result should be the same in theory, it will be slightly different in practice
                     if args.distillation:
@@ -291,7 +291,7 @@ def train(model, data, epoch, optimizer, scaler, scheduler, args, global_trained
                 evaluate(model, data, epoch, args, step + 1)
             else:
                 # fp16 is needed in flash attention
-                with autocast():
+                with autocast(device_type='cuda'):
                     evaluate(model, data, epoch, args, step + 1)
             # set model back to train mode
             model.train()
