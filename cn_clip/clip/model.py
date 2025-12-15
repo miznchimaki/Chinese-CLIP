@@ -228,7 +228,16 @@ class Transformer(nn.Module):
 
 
 class VisualTransformer(nn.Module):
-    def __init__(self, input_resolution: int, patch_size: int, width: int, layers: int, heads: int, output_dim: int, use_flash_attention: bool = False):
+    def __init__(
+        self,
+        input_resolution: int,
+        patch_size: int,
+        width: int,
+        layers: int,
+        heads: int,
+        output_dim: int,
+        use_flash_attention: bool = False
+    ):
         super().__init__()
         self.input_resolution = input_resolution
         self.grid_size = (self.input_resolution // patch_size, self.input_resolution // patch_size)
@@ -288,30 +297,31 @@ class VisualTransformer(nn.Module):
 
 
 class CLIP(nn.Module):
-    def __init__(self,
-                 embed_dim: int,
-                 # vision
-                 image_resolution: int,
-                 vision_layers: Union[Tuple[int, int, int, int], int],
-                 vision_width: int,
-                 vision_patch_size: int,
-                 # text
-                 vocab_size: int,
-                 text_attention_probs_dropout_prob: float, 
-                 text_hidden_act: str, 
-                 text_hidden_dropout_prob: float, 
-                 text_hidden_size: int,
-                 text_initializer_range: float, 
-                 text_intermediate_size: int, 
-                 text_max_position_embeddings: int, 
-                 text_num_attention_heads: int, 
-                 text_num_hidden_layers: int, 
-                 text_type_vocab_size: int,
-                 tokenizer = _tokenizer,
-                 # vision head width, added this param for ViT-H
-                 vision_head_width: int = 64,
-                 use_flash_attention: bool = False,
-                 ):
+    def __init__(
+        self,
+        embed_dim: int,
+        # vision
+        image_resolution: int,
+        vision_layers: Union[Tuple[int, int, int, int], int],
+        vision_width: int,
+        vision_patch_size: int,
+        # text
+        vocab_size: int,
+        text_attention_probs_dropout_prob: float, 
+        text_hidden_act: str, 
+        text_hidden_dropout_prob: float, 
+        text_hidden_size: int,
+        text_initializer_range: float, 
+        text_intermediate_size: int, 
+        text_max_position_embeddings: int, 
+        text_num_attention_heads: int, 
+        text_num_hidden_layers: int, 
+        text_type_vocab_size: int,
+        tokenizer = _tokenizer,
+        # vision head width, added this param for ViT-H
+        vision_head_width: int = 64,
+        use_flash_attention: bool = False,
+    ):
         super().__init__()
 
         if isinstance(vision_layers, (tuple, list)):

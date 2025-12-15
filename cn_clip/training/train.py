@@ -120,10 +120,15 @@ def get_loss(
 
     ground_truth = torch.arange(len(logits_per_image)).long()
     ground_truth = ground_truth.cuda(args.local_device_rank, non_blocking=True)
-    total_loss = (
-        loss_img(logits_per_image, ground_truth)
-        + loss_txt(logits_per_text, ground_truth)
-    ) / 2
+
+    # TODO: (mizuno) experiment
+    # TODO: modify the weights for i2t loss and t2i loss
+    # total_loss = (
+    #     loss_img(logits_per_image, ground_truth)
+    #     + loss_txt(logits_per_text, ground_truth)
+    # ) / 2
+    total_loss = 0.4 * loss_img(logits_per_image, ground_truth) + \
+                 0.6 * loss_txt(logits_per_text, ground_truth)
 
     acc = None
     if args.report_training_batch_acc:
