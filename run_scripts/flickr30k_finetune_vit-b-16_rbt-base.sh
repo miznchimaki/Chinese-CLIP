@@ -10,7 +10,7 @@ GPUS_PER_NODE=${1:-8}
 WORKER_CNT=${2:-1}
 
 # The ip address of the rank-0 worker, for single-worker training, please set to localhost
-MASTER_ADDR_VAR=${3:-192.168.100.70}
+MASTER_ADDR_VAR=${3:-localhost}
 export MASTER_ADDR=${MASTER_ADDR_VAR}
 
 # The port for communication
@@ -54,7 +54,7 @@ warmup=10  # warmup ratio 0.01 is ok
 batch_size=512
 valid_batch_size=128
 accum_freq=4
-lr=1.2e-5  # learning rate 3e-6 is best for 1 node; 1.2e-5 is best for 4 nodes
+lr=6e-6  # learning rate 3e-6 is best for 1 node; 1.2e-5 is best for 4 nodes
 # wd=0.001
 wd=0.001 # weight decay 0.001 is best
 # epoch 1 is best
@@ -65,7 +65,7 @@ vision_model=ViT-L-14-336
 text_model=RoBERTa-wwm-ext-base-chinese
 use_augment="--use-augment"
 # use_augment=""
-name=concat_zero_aic_and_aic_and_coco_finetune_vit_large_336_lr_${lr}_bs${batch_size}_epochs${max_epochs}_gradaccum_${accum_freq}_wd${wd}_warmup_${warmup}_gpu${GPUS_PER_NODE}_nodes${WORKER_CNT}
+name=concat_wukong_zero_aic_and_aic_and_coco_finetune_vit_large_336_lr_${lr}_bs${batch_size}_epochs${max_epochs}_gradaccum_${accum_freq}_wd${wd}_warmup_${warmup}_gpu${GPUS_PER_NODE}_nodes${WORKER_CNT}
 
 python3 -m torch.distributed.launch --use_env --nproc_per_node=${GPUS_PER_NODE} --nnodes=${WORKER_CNT} --node_rank=${RANK} \
           --master_addr=${MASTER_ADDR} --master_port=${MASTER_PORT} cn_clip/training/main.py \

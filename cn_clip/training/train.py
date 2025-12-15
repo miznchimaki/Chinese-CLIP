@@ -18,7 +18,19 @@ from cn_clip.clip.model import convert_state_dict
 def is_master(args):
     return args.rank == 0
 
-def get_loss(model, images, texts, loss_img, loss_txt, args, accum_image_features=None, accum_text_features=None, accum_idx=-1, teacher_model=None, teacher_accum_image_features=None):
+def get_loss(
+    model,
+    images,
+    texts,
+    loss_img,
+    loss_txt,
+    args,
+    accum_image_features=None,
+    accum_text_features=None,
+    accum_idx=-1,
+    teacher_model=None,
+    teacher_accum_image_features=None
+):
     if args.accum_freq == 1:
         image_features, text_features, logit_scale = model(images, texts, args.mask_ratio)
 
@@ -44,7 +56,7 @@ def get_loss(model, images, texts, loss_img, loss_txt, args, accum_image_feature
                     teacher_chunk_image_features = output
             teacher_image_features = torch.cat(
             teacher_accum_image_features[:accum_idx] + [teacher_chunk_image_features] + teacher_accum_image_features[accum_idx + 1:])
-        
+
         image_features = torch.cat(
             accum_image_features[:accum_idx] + [chunk_image_features] + accum_image_features[accum_idx + 1:])
         text_features = torch.cat(
@@ -68,7 +80,7 @@ def get_loss(model, images, texts, loss_img, loss_txt, args, accum_image_feature
             gathered_text_features = [
                 torch.zeros_like(text_features) for _ in range(world_size)
             ]
-            
+
             dist.all_gather(gathered_image_features, image_features)
             dist.all_gather(gathered_text_features, text_features)
 
@@ -108,7 +120,6 @@ def get_loss(model, images, texts, loss_img, loss_txt, args, accum_image_feature
 
     ground_truth = torch.arange(len(logits_per_image)).long()
     ground_truth = ground_truth.cuda(args.local_device_rank, non_blocking=True)
-
     total_loss = (
         loss_img(logits_per_image, ground_truth)
         + loss_txt(logits_per_text, ground_truth)
@@ -119,11 +130,11 @@ def get_loss(model, images, texts, loss_img, loss_txt, args, accum_image_feature
         i2t_acc = (logits_per_image.argmax(-1) == ground_truth).sum() / len(logits_per_image)
         t2i_acc = (logits_per_text.argmax(-1) == ground_truth).sum() / len(logits_per_text)
         acc = {"i2t": i2t_acc, "t2i": t2i_acc}
-
     if args.distillation:
         total_loss += kd_loss * args.kd_loss_weight
 
     return total_loss, acc
+
 
 def freeze_vision_bn(args, model):
     # freeze bn running mean and variance
@@ -133,7 +144,18 @@ def freeze_vision_bn(args, model):
             if isinstance(m, nn.BatchNorm2d):
                 m.eval()
 
-def train(model, data, epoch, optimizer, scaler, scheduler, args, global_trained_steps, teacher_model=None):
+
+def train(
+    model,
+    data,
+    epoch,
+    optimizer,
+    scaler,
+    scheduler,
+    args,
+    global_trained_steps,
+    teacher_model=None
+):
     # os.environ["WDS_EPOCH"] = str(epoch)
 
     model.train()
@@ -327,7 +349,6 @@ def train(model, data, epoch, optimizer, scaler, scheduler, args, global_trained
                 save_path,
             )
             logging.info("Saved checkpoint {} (epoch {} @ {} steps) (writing took {} seconds)".format(save_path, epoch + 1, step + 1, time.time() - t1))
-        
     return epoch_trained_steps
 
 

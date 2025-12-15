@@ -270,7 +270,7 @@ def main():
 
         for k, v in teacher_model.state_dict().items():
             v.requires_grad = False
-        
+
         # mapping different extract_features function to same name
         mapping = teacher_model_dict[args.teacher_model_name]
         if "model" in mapping and hasattr(teacher_model, "model"):
@@ -287,7 +287,6 @@ def main():
         logging.info(f"Teacher model loaded from {args.teacher_model_name}")
     else:
         teacher_model = None
-
 
     for epoch in range(start_epoch, args.max_epochs):
         if is_master(args) == 0:
@@ -329,7 +328,7 @@ def main():
                     save_path,
                 )
                 logging.info("Saved checkpoint {} (epoch {} @ {} steps) (writing took {} seconds)".format(save_path, epoch + 1, steps, time.time() - t1))
-            
+
             # Save the latest params
             t1 = time.time()
             save_path = os.path.join(args.checkpoint_path, f"epoch_latest.pt")

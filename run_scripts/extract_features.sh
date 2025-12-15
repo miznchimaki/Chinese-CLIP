@@ -10,7 +10,7 @@ DATAPATH=${HOME}/projects/Chinese-CLIP
 device=${1:-'0'}
 split=${2:-'test'}
 dataset_name=${3:-'concat_wukong_zero_aic_and_aic_and_coco'}
-exp_name=${4:-'concat_zero_aic_and_aic_and_coco_finetune_vit_huge_lr_8e-6_bs256_epochs1_gradaccum_2_wd0.001_warmup_4_gpu8_nodes4'}
+exp_name=${4:-'concat_wukong_zero_aic_and_aic_and_coco_finetune_vit_large_336_lr_8e-6_bs512_epochs1_gradaccum_4_wd0.001_warmup_10_gpu8_nodes1'}
 resume_ckpt_name=${5:-'epoch1.pt'}
 
 export CUDA_VISIBLE_DEVICES=${device}
