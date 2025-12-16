@@ -62,10 +62,12 @@ max_epochs=1  # or you can alternatively specify --max-steps
 valid_step_interval=500
 valid_epoch_interval=1
 vision_model=ViT-L-14-336
+# vision_model=ViT-H-14-336
 text_model=RoBERTa-wwm-ext-base-chinese
+# text_model=RoBERTa-wwm-ext-large-chinese
 use_augment="--use-augment"
 # use_augment=""
-name=concat_wukong_zero_aic_and_aic_and_coco_finetune_vit_large_336_lr_${lr}_bs${batch_size}_epochs${max_epochs}_gradaccum_${accum_freq}_wd${wd}_warmup_${warmup}_gpu${GPUS_PER_NODE}_nodes${WORKER_CNT}_unbalanced_loss_weights
+name=concat_wukong_zero_aic_and_aic_and_coco_finetune_vit_large_336_lr_${lr}_bs${batch_size}_epochs${max_epochs}_gradaccum_${accum_freq}_wd${wd}_warmup_${warmup}_gpu${GPUS_PER_NODE}_nodes${WORKER_CNT}_unbalanced_loss_weights_0.5and1
 
 python3 -m torch.distributed.launch --use_env --nproc_per_node=${GPUS_PER_NODE} --nnodes=${WORKER_CNT} --node_rank=${RANK} \
           --master_addr=${MASTER_ADDR} --master_port=${MASTER_PORT} cn_clip/training/main.py \
