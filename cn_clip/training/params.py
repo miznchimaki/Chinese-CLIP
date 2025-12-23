@@ -145,6 +145,12 @@ def parse_args():
         help="Random mask ratio for text tokens when running masked language modeling on the text encoder.",
     )
     parser.add_argument(
+        "--mlm-loss-weight",
+        default=1.0,
+        type=float,
+        help="Mask language modeling for text encoder of Chinese-CLIP"
+    )
+    parser.add_argument(
         "--clip-weight-path",
         default=None,
         type=str,

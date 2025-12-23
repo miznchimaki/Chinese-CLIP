@@ -25,14 +25,22 @@ def get_loss(
     loss_img,
     loss_txt,
     args,
+    loss_mlm=None,
     accum_image_features=None,
     accum_text_features=None,
     accum_idx=-1,
     teacher_model=None,
     teacher_accum_image_features=None
 ):
+    output_mlm = isinstance(loss_mlm, nn.CrossEntropyLoss)
+    mlm_loss_value = 0.0 if args.accum_freq != 1 else None
+    mlm_logits = mlm_labels = None
     if args.accum_freq == 1:
-        image_features, text_features, logit_scale = model(images, texts, args.mask_ratio)
+        model_output = model(images, texts, mask_ratio=args.mask_raio, output_mlm=output_mlm)
+        image_features, text_features, logit_scale = model_output[0], model_output[1], model_output[2]
+        if output_mlm:
+            mlm_logits, mlm_labels = model_output[3], model_output[4]
+            mlm_loss_value = loss_mlm(mlm_logits, mlm_labels)
 
         if args.distillation:
             with torch.no_grad():
@@ -44,7 +52,16 @@ def get_loss(
                     teacher_image_features = output
     else:
         assert accum_image_features and accum_text_features and accum_idx != -1
-        chunk_image_features, chunk_text_features, logit_scale = model(images, texts, args.mask_ratio)
+        model_output = model(
+            images,
+            texts,
+            mask_ratio=args.mask_ratio,
+            output_mlm=output_mlm
+        )
+        chunk_image_features, chunk_text_features, logit_scale = model_output[0], model_output[1], model_output[2]
+        if output_mlm:
+            mlm_logits, mlm_labels = model_output[3], model_output[4]
+            mlm_loss_value += loss_mlm(mlm_logits, mlm_labels)
 
         if args.distillation:
             with torch.no_grad():
@@ -125,6 +142,8 @@ def get_loss(
         loss_img(logits_per_image, ground_truth)
         + loss_txt(logits_per_text, ground_truth)
     ) / 2
+    if output_mlm and mlm_loss_value:
+        total_loss += args.mlm_loss_weight * mlm_loss_value
 
     acc = None
     if args.report_training_batch_acc:
@@ -212,18 +231,52 @@ def train(
             if args.precision == "amp":
                 with autocast(device_type='cuda'):
                     if args.distillation:
-                        total_loss, acc = get_loss(model, images, texts, loss_img, loss_txt, args, teacher_model=teacher_model)
+                        total_loss, acc = get_loss(
+                            model,
+                            images,
+                            texts,
+                            loss_img,
+                            loss_txt,
+                            args,
+                            loss_mlm=nn.CrossEntropyLoss() if args.text_mask_ratio > 0.0 else None,
+                            teacher_model=teacher_model
+                        )
                     else:
-                        total_loss, acc = get_loss(model, images, texts, loss_img, loss_txt, args)
+                        total_loss, acc = get_loss(
+                            model,
+                            images,
+                            texts,
+                            loss_img,
+                            loss_txt,
+                            args,
+                            loss_mlm=nn.CrossEntropyLoss() if args.text_mask_ratio > 0.0 else None
+                        )
                     scaler.scale(total_loss).backward()
                     scaler.step(optimizer)
                 scaler.update()
 
             else:
                 if args.distillation:
-                    total_loss, acc = get_loss(model, images, texts, loss_img, loss_txt, args, teacher_model=teacher_model)
+                    total_loss, acc = get_loss(
+                        model,
+                        images,
+                        texts,
+                        loss_img,
+                        loss_txt,
+                        args,
+                        loss_mlm=nn.CrossEntropyLoss() if args.text_mask_ratio > 0.0 else None,
+                        teacher_model=teacher_model
+                    )
                 else:
-                    total_loss, acc = get_loss(model, images, texts, loss_img, loss_txt, args)
+                    total_loss, acc = get_loss(
+                        model,
+                        images,
+                        texts,
+                        loss_img,
+                        loss_txt,
+                        args,
+                        loss_mlm=nn.CrossEntropyLoss() if args.text_mask_ratio > 0.0 else None
+                    )
                 total_loss.backward()
                 optimizer.step()
         else:
@@ -261,9 +314,33 @@ def train(
                     # `total_loss` and `acc` are coarsely sampled, taking only the last result in the loop.
                     # Although each result should be the same in theory, it will be slightly different in practice
                     if args.distillation:
-                        total_loss, acc = get_loss(model, images, texts, loss_img, loss_txt, args, accum_image_features, accum_text_features, j, teacher_model, teacher_accum_image_features)
+                        total_loss, acc = get_loss(
+                            model,
+                            images,
+                            texts,
+                            loss_img,
+                            loss_txt,
+                            args,
+                            loss_mlm=nn.CrossEntropyLoss() if args.text_mask_ratio > 0.0 else None,
+                            accum_image_features=accum_image_features,
+                            accum_text_features=accum_text_features,
+                            accum_idx=j,
+                            teacher_model=teacher_model,
+                            teacher_accum_image_features=teacher_accum_image_features
+                        )
                     else:
-                        total_loss, acc = get_loss(model, images, texts, loss_img, loss_txt, args, accum_image_features, accum_text_features, j)
+                        total_loss, acc = get_loss(
+                            model,
+                            images,
+                            texts,
+                            loss_img,
+                            loss_txt,
+                            args,
+                            loss_mlm=nn.CrossEntropyLoss() if args.text_mask_ratio > 0.0 else None,
+                            accum_image_features=accum_image_features,
+                            accum_text_features=accum_text_features,
+                            accum_idx=j
+                        )
                 if args.precision == "amp":
                     scaler.scale(total_loss).backward()
                 else:
@@ -358,6 +435,7 @@ def evaluate(model, data, epoch, args, steps):
     logging.info("Begin to eval on validation set (epoch {} @ {} steps)...".format(epoch + 1, steps))
 
     model.eval()
+    model.text_mask_ratio = 0.0
 
     dataloader = data['val'].dataloader
     data_iter = iter(dataloader)
