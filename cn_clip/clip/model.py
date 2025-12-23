@@ -1,5 +1,5 @@
 from collections import OrderedDict
-from typing import Tuple, Union
+from typing import Tuple, Union, Optional
 from itertools import repeat
 import collections.abc
 
@@ -17,7 +17,7 @@ from torch.utils.checkpoint import checkpoint
 
 from cn_clip.clip import _tokenizer
 from cn_clip.clip.configuration_bert import BertConfig
-from cn_clip.clip.modeling_bert import BertModel
+from cn_clip.clip.modeling_bert import BertModel, BertOnlyMLMHead
 
 
 class Bottleneck(nn.Module):
@@ -321,6 +321,7 @@ class CLIP(nn.Module):
         # vision head width, added this param for ViT-H
         vision_head_width: int = 64,
         use_flash_attention: bool = False,
+        text_mask_ratio: float = 0.15,
     ):
         super().__init__()
 
@@ -361,11 +362,16 @@ class CLIP(nn.Module):
             use_flash_attention=use_flash_attention
         )
         self.bert = BertModel(self.bert_config)
+        self.text_mlm_head = BertOnlyMLMHead(self.bert_config)
 
         self.text_projection = nn.Parameter(torch.empty(text_hidden_size, embed_dim))
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
         self.tokenizer = tokenizer
+        self.text_mask_ratio = text_mask_ratio
+
+        # tie MLM decoder weight to input embeddings
+        self.text_mlm_head.predictions.decoder.weight = self.bert.embeddings.word_embeddings.weight
 
         self.initialize_parameters()
 
@@ -403,24 +409,81 @@ class CLIP(nn.Module):
             return self.visual(image.type(self.dtype))
         return self.visual(image.type(self.dtype), mask_ratio)
 
-    def encode_text(self, text):
+    def _mask_text_tokens(self, text: torch.Tensor, mask_ratio: float):
+        input_ids = text.clone()
+        labels = text.clone()
+
+        vocab_size = self.bert_config.vocab_size
+        mask_token_id = self.tokenizer.vocab['[MASK]']
+        pad_index = self.tokenizer.vocab['[PAD]']
+        cls_index = self.tokenizer.vocab['[CLS]']
+        sep_index = self.tokenizer.vocab['[SEP]']
+
+        probability_matrix = torch.full(labels.shape, mask_ratio, device=labels.device)
+        special_tokens_mask = (
+            (labels == pad_index) | (labels == cls_index) | (labels == sep_index)
+        )
+        probability_matrix.masked_fill_(special_tokens_mask, 0.0)
+
+        masked_indices = torch.bernoulli(probability_matrix).bool()
+        labels[~masked_indices] = -100
+
+        # 80% of the time, replace masked input tokens with [MASK]
+        indices_replaced = torch.bernoulli(torch.full(labels.shape, 0.8, device=labels.device)).bool() & masked_indices
+        input_ids[indices_replaced] = mask_token_id
+
+        # 10% of the time, replace masked input tokens with random token
+        indices_random = (
+            torch.bernoulli(torch.full(labels.shape, 0.5, device=labels.device)).bool()
+            & masked_indices
+            & ~indices_replaced
+        )
+        random_words = torch.randint(vocab_size, labels.shape, device=labels.device, dtype=torch.long)
+        input_ids[indices_random] = random_words[indices_random]
+
+        return input_ids, labels
+
+    def encode_text(self, text, text_mask_ratio: Optional[float] = None, output_mlm: bool = False):
         pad_index = self.tokenizer.vocab['[PAD]']
         attn_mask = text.ne(pad_index).type(self.dtype)
-        x = self.bert(text, attention_mask=attn_mask)[0].type(self.dtype) # [batch_size, seq_length, hidden_size]
-        return x[:, 0, :] @ self.text_projection
 
-    def forward(self, image, text, mask_ratio=0):
+        mlm_labels = None
+        if output_mlm:
+            ratio = self.text_mask_ratio if text_mask_ratio is None else text_mask_ratio
+            if ratio > 0:
+                text, mlm_labels = self._mask_text_tokens(text, ratio)
+            else:
+                mlm_labels = torch.full_like(text, -100)
+
+        x = self.bert(text, attention_mask=attn_mask)[0].type(self.dtype) # [batch_size, seq_length, hidden_size]
+        text_features = x[:, 0, :] @ self.text_projection
+
+        if output_mlm:
+            mlm_logits = self.text_mlm_head(x)
+            return text_features, mlm_logits, mlm_labels
+
+        return text_features
+
+    def forward(self, image, text, mask_ratio=0, text_mask_ratio: Optional[float] = None, output_mlm: bool = False):
         assert image is not None or text is not None, "text and image cannot both be None!"
 
         if image is None:
-            return self.encode_text(text)
+            return self.encode_text(text, text_mask_ratio, output_mlm)
         elif text is None:
             return self.encode_image(image)
         image_features = self.encode_image(image, mask_ratio)
-        text_features = self.encode_text(text)
+        text_output = self.encode_text(text, text_mask_ratio, output_mlm)
+
+        if output_mlm:
+            text_features, mlm_logits, mlm_labels = text_output
+        else:
+            text_features = text_output
 
         image_features = image_features / image_features.norm(dim=-1, keepdim=True)
         text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+
+        if output_mlm:
+            return image_features, text_features, self.logit_scale.exp(), mlm_logits, mlm_labels
 
         return image_features, text_features, self.logit_scale.exp()
 
