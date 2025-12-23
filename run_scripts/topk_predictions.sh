@@ -8,8 +8,8 @@ conda activate qwen3vl
 
 DATAPATH=${HOME}/projects/Chinese-CLIP
 split=${1:-'test'}
-dataset_name=${2:-'concat_wukong_zero_aic_and_aic_and_coco'}
-exp_name=${3:-'concat_wukong_zero_aic_and_aic_and_coco_finetune_vit_large_336_lr_9e-6_bs512_epochs1_gradaccum_4_wd0.001_warmup_10_gpu8_nodes1_unbalanced_loss_weights_7and3'}
+dataset_name=${2:-'concat_laion_cn_wukong_zero_aic_and_aic_coco'}
+exp_name=${3:-'concat_laion_cn_and_wukong_and_zero_aic_and_aic_and_coco_finetune_vit_large_336_lr_8e-6_bs512_epochs1_gradaccum_4_wd0.001_warmup_18_gpu8_nodes1'}
 resume_ckpt_name=${4:-'epoch1.pt'}
 resume_ckpt_stem=`echo ${resume_ckpt_name} | cut -d'.' -f1-1`
 

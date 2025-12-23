@@ -123,18 +123,18 @@ def get_loss(
 
     # TODO: (mizuno) experiment
     # TODO: modify the weights for i2t loss and t2i loss
-    # total_loss = (
-    #     loss_img(logits_per_image, ground_truth)
-    #     + loss_txt(logits_per_text, ground_truth)
-    # ) / 2
+    total_loss = (
+        loss_img(logits_per_image, ground_truth)
+        + loss_txt(logits_per_text, ground_truth)
+    ) / 2
     # total_loss = 0.4 * loss_img(logits_per_image, ground_truth) + \
     #              0.6 * loss_txt(logits_per_text, ground_truth)
     # total_loss = 0.3 * loss_img(logits_per_image, ground_truth) + \
     #              0.7 * loss_txt(logits_per_text, ground_truth)
-    total_loss = (
-        loss_img(logits_per_image, ground_truth)
-        + 2 * loss_txt(logits_per_text, ground_truth)
-    ) / 2
+    # total_loss = (
+    #     loss_img(logits_per_image, ground_truth)
+    #     + 2 * loss_txt(logits_per_text, ground_truth)
+    # ) / 2
 
     acc = None
     if args.report_training_batch_acc:

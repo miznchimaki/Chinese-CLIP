@@ -30,8 +30,8 @@ conda activate qwen3vl
 export PYTHONPATH=${PYTHONPATH}:`pwd`/cn_clip/
 
 # data options
-train_data=${DATAPATH}/datasets/concat_wukong_zero_aic_and_aic_and_coco/lmdb/train
-val_data=${DATAPATH}/datasets/concat_wukong_zero_aic_and_aic_and_coco/lmdb/test # if val_data is not specified, the validation will be automatically disabled
+train_data=${DATAPATH}/datasets/concat_laion_cn_wukong_zero_aic_and_aic_coco/lmdb/train
+val_data=${DATAPATH}/datasets/concat_laion_cn_wukong_zero_aic_and_aic_coco/lmdb/test # if val_data is not specified, the validation will be automatically disabled
 
 # restore options
 resume=${DATAPATH}/pretrained_weights/chinese-clip-vit-large-patch14-336px/clip_cn_vit-l-14-336.pt  # or specify your customed ckpt path to resume
@@ -50,16 +50,16 @@ report_training_batch_acc="--report-training-batch-acc"
 # training hyper-params
 context_length=512
 # warmup=100
-warmup=10  # warmup ratio 0.01 is ok
+warmup=18  # warmup ratio 0.01 is ok
 batch_size=512
 valid_batch_size=128
 accum_freq=4
-lr=9e-6  # learning rate 3e-6 is best for 1 node; 1.2e-5 is best for 4 nodes
+lr=8e-6  # learning rate 3e-6 is best for 1 node; 1.2e-5 is best for 4 nodes
 # wd=0.001
-wd=0.001 # weight decay 0.001 is best
+wd=0.003 # weight decay 0.001 is best
 # epoch 1 is best
 max_epochs=1  # or you can alternatively specify --max-steps
-valid_step_interval=500
+valid_step_interval=2000
 valid_epoch_interval=1
 vision_model=ViT-L-14-336
 # vision_model=ViT-H-14-336
@@ -67,7 +67,7 @@ text_model=RoBERTa-wwm-ext-base-chinese
 # text_model=RoBERTa-wwm-ext-large-chinese
 use_augment="--use-augment"
 # use_augment=""
-name=concat_wukong_zero_aic_and_aic_and_coco_finetune_vit_large_336_lr_${lr}_bs${batch_size}_epochs${max_epochs}_gradaccum_${accum_freq}_wd${wd}_warmup_${warmup}_gpu${GPUS_PER_NODE}_nodes${WORKER_CNT}_unbalanced_loss_weights_0.5and1
+name=concat_laion_cn_and_wukong_and_zero_aic_and_aic_and_coco_finetune_vit_large_336_lr_${lr}_bs${batch_size}_epochs${max_epochs}_gradaccum_${accum_freq}_wd${wd}_warmup_${warmup}_gpu${GPUS_PER_NODE}_nodes${WORKER_CNT}
 
 python3 -m torch.distributed.launch --use_env --nproc_per_node=${GPUS_PER_NODE} --nnodes=${WORKER_CNT} --node_rank=${RANK} \
           --master_addr=${MASTER_ADDR} --master_port=${MASTER_PORT} cn_clip/training/main.py \
@@ -96,3 +96,4 @@ python3 -m torch.distributed.launch --use_env --nproc_per_node=${GPUS_PER_NODE} 
           --grad-checkpointing \
           ${use_augment} \
           --text-model=${text_model}
+

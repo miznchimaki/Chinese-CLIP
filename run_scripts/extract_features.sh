@@ -9,8 +9,8 @@ conda activate qwen3vl
 DATAPATH=${HOME}/projects/Chinese-CLIP
 device=${1:-'0'}
 split=${2:-'test'}
-dataset_name=${3:-'concat_wukong_zero_aic_and_aic_and_coco'}
-exp_name=${4:-'concat_wukong_zero_aic_and_aic_and_coco_finetune_vit_large_336_lr_9e-6_bs512_epochs1_gradaccum_4_wd0.001_warmup_10_gpu8_nodes1_unbalanced_loss_weights_7and3'}
+dataset_name=${3:-'concat_laion_cn_wukong_zero_aic_and_aic_coco'}
+exp_name=${4:-'concat_laion_cn_and_wukong_and_zero_aic_and_aic_and_coco_finetune_vit_large_336_lr_8e-6_bs512_epochs1_gradaccum_4_wd0.001_warmup_18_gpu8_nodes1'}
 resume_ckpt_name=${5:-'epoch1.pt'}
 
 export CUDA_VISIBLE_DEVICES=${device}
@@ -28,3 +28,4 @@ python -u cn_clip/eval/extract_features.py \
     --resume=${DATAPATH}/experiments/${exp_name}/checkpoints/${resume_ckpt_name} \
     --vision-model=ViT-L-14-336 \
     --text-model=RoBERTa-wwm-ext-base-chinese
+
