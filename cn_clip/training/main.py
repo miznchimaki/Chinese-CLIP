@@ -90,6 +90,7 @@ def main():
         for k, v in json.load(ft).items():
             model_info[k] = v
     model_info['use_flash_attention'] = args.use_flash_attention
+    model_info['text_mask_ratio'] = args.text_mask_ratio
 
     model = CLIP(**model_info)
     if args.clip_weight_path is not None:

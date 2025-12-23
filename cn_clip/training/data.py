@@ -36,24 +36,48 @@ def _preprocess_text(text):
 
 class LMDBDataset(Dataset):
     def __init__(self, lmdb_path, split="val", max_txt_length=64, use_augment=False, resolution=224):
-        self.lmdb_path = lmdb_path
+        self.lmdb_paths = lmdb_path if isinstance(lmdb_path, (list, tuple)) else [lmdb_path]
 
         # assert LMDB directories exist
-        assert os.path.isdir(lmdb_path), "The LMDB directory {} of {} split does not exist!".format(lmdb_path, split)
-        lmdb_pairs = os.path.join(lmdb_path, "pairs")
-        assert os.path.isdir(lmdb_pairs), "The LMDB directory {} of {} image-text pairs does not exist!".format(lmdb_pairs, split)
-        lmdb_imgs = os.path.join(lmdb_path, "imgs")
-        assert os.path.isdir(lmdb_imgs), "The LMDB directory {} of {} image base64 strings does not exist!".format(lmdb_imgs, split)
+        for path in self.lmdb_paths:
+            assert os.path.isdir(path), "The LMDB directory {} of {} split does not exist!".format(path, split)
+            lmdb_pairs = os.path.join(path, "pairs")
+            assert os.path.isdir(lmdb_pairs), "The LMDB directory {} of {} image-text pairs does not exist!".format(lmdb_pairs, split)
+            lmdb_imgs = os.path.join(path, "imgs")
+            assert os.path.isdir(lmdb_imgs), "The LMDB directory {} of {} image base64 strings does not exist!".format(lmdb_imgs, split)
 
         # open LMDB files
-        self.env_pairs = lmdb.open(lmdb_pairs, readonly=True, create=False, lock=False, readahead=False, meminit=False)
-        self.txn_pairs = self.env_pairs.begin(buffers=True)
-        self.env_imgs = lmdb.open(lmdb_imgs, readonly=True, create=False, lock=False, readahead=False, meminit=False)
-        self.txn_imgs = self.env_imgs.begin(buffers=True)
+        self.env_pairs = []
+        self.txn_pairs = []
+        self.env_imgs = []
+        self.txn_imgs = []
+        self.sample_intervals = []
+
+        current_start = 0
+        total_images = 0
+        for path in self.lmdb_paths:
+            lmdb_pairs = os.path.join(path, "pairs")
+            lmdb_imgs = os.path.join(path, "imgs")
+            env_pairs = lmdb.open(lmdb_pairs, readonly=True, create=False, lock=False, readahead=False, meminit=False)
+            txn_pairs = env_pairs.begin(buffers=True)
+            env_imgs = lmdb.open(lmdb_imgs, readonly=True, create=False, lock=False, readahead=False, meminit=False)
+            txn_imgs = env_imgs.begin(buffers=True)
+
+            number_samples = int(txn_pairs.get(key=b'num_samples').tobytes().decode('utf-8'))
+            number_images = int(txn_imgs.get(key=b'num_images').tobytes().decode('utf-8'))
+
+            self.env_pairs.append(env_pairs)
+            self.txn_pairs.append(txn_pairs)
+            self.env_imgs.append(env_imgs)
+            self.txn_imgs.append(txn_imgs)
+            self.sample_intervals.append((current_start, current_start + number_samples))
+
+            current_start += number_samples
+            total_images += number_images
 
         # fetch number of pairs and images
-        self.number_samples = int(self.txn_pairs.get(key=b'num_samples').tobytes().decode('utf-8'))
-        self.number_images = int(self.txn_imgs.get(key=b'num_images').tobytes().decode('utf-8'))
+        self.number_samples = current_start
+        self.number_images = total_images
         logging.info("{} LMDB file contains {} images and {} pairs.".format(split, self.number_images, self.number_samples))
 
         super(LMDBDataset, self).__init__()
@@ -92,9 +116,11 @@ class LMDBDataset(Dataset):
 
     def __del__(self):
         if hasattr(self, 'env_pairs'):
-            self.env_pairs.close()
+            for env in self.env_pairs:
+                env.close()
         if hasattr(self, 'env_imgs'):
-            self.env_imgs.close()
+            for env in self.env_imgs:
+                env.close()
 
     def __len__(self):
         return self.dataset_len
@@ -102,10 +128,20 @@ class LMDBDataset(Dataset):
     def __getitem__(self, index):
         sample_index = index % self.number_samples
 
-        pair = pickle.loads(self.txn_pairs.get("{}".format(sample_index).encode('utf-8')).tobytes())
+        env_idx = None
+        local_index = None
+        for idx, (start, end) in enumerate(self.sample_intervals):
+            if start <= sample_index < end:
+                env_idx = idx
+                local_index = sample_index - start
+                break
+
+        assert env_idx is not None, "Sample index {} is out of bounds.".format(sample_index)
+
+        pair = pickle.loads(self.txn_pairs[env_idx].get("{}".format(local_index).encode('utf-8')).tobytes())
         image_id, text_id, raw_text = pair
 
-        image_b64 = self.txn_imgs.get("{}".format(image_id).encode('utf-8')).tobytes()
+        image_b64 = self.txn_imgs[env_idx].get("{}".format(image_id).encode('utf-8')).tobytes()
         image_b64 = image_b64.decode(encoding="utf8", errors="ignore")
         image = Image.open(BytesIO(base64.urlsafe_b64decode(image_b64))) # already resized
         image = self.transform(image)

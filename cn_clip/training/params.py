@@ -139,6 +139,12 @@ def parse_args():
         help="Random mask ratio of patches during finetuning. Default to zero which does not mask any patches.",
     )
     parser.add_argument(
+        "--text-mask-ratio",
+        default=0.15,
+        type=float,
+        help="Random mask ratio for text tokens when running masked language modeling on the text encoder.",
+    )
+    parser.add_argument(
         "--clip-weight-path",
         default=None,
         type=str,
