@@ -150,6 +150,15 @@ def parse_args():
         type=float,
         help="Mask language modeling for text encoder of Chinese-CLIP"
     )
+
+    # VTM loss arguments
+    parser.add_argument('--vtm-loss', action='store_true', help='whether use VTM (Vision Text Matching) loss for Chinese-CLIP finetuning')
+    parser.add_argument('--vtm-loss-weight', default=1.0, type=float, help='VTM loss weight in total loss')
+    parser.add_argument('--vtm-hard-sample-ratio', default=0.2, type=float,
+        help='hard negative samples ratio for VTM loss, will be covered by --vtm-hard-sample-num'
+    )
+    parser.add_argument('--vtm-hard-sample-num', default=5, type=int, help='hard negative samples number for VTM loss')
+
     parser.add_argument(
         "--clip-weight-path",
         default=None,
