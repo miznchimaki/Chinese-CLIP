@@ -448,17 +448,13 @@ class CLIP(nn.Module):
         attn_mask = text.ne(pad_index).type(self.dtype)
 
         mlm_labels = None
-        if output_mlm:
-            ratio = self.text_mask_ratio if text_mask_ratio is None else text_mask_ratio
-            if ratio > 0:
-                text, mlm_labels = self._mask_text_tokens(text, ratio)
-            else:
-                mlm_labels = torch.full_like(text, -100)
+        if output_mlm and isinstance(text_mask_ratio, float) and text_mask_ratio > 0.0:
+            text, mlm_labels = self._mask_text_tokens(text, text_mask_ratio)
 
         x = self.bert(text, attention_mask=attn_mask)[0].type(self.dtype) # [batch_size, seq_length, hidden_size]
         text_features = x[:, 0, :] @ self.text_projection
 
-        if output_mlm:
+        if output_mlm and isinstance(text_mask_ratio, float) and text_mask_ratio > 0.0:
             mlm_logits = self.text_mlm_head(x)
             return text_features, mlm_logits, mlm_labels
 
@@ -474,7 +470,7 @@ class CLIP(nn.Module):
         image_features = self.encode_image(image, mask_ratio)
         text_output = self.encode_text(text, text_mask_ratio, output_mlm)
 
-        if output_mlm:
+        if output_mlm and isinstance(text_mask_ratio, float) and text_mask_ratio > 0.0:
             text_features, mlm_logits, mlm_labels = text_output
         else:
             text_features = text_output
@@ -482,7 +478,7 @@ class CLIP(nn.Module):
         image_features = image_features / image_features.norm(dim=-1, keepdim=True)
         text_features = text_features / text_features.norm(dim=-1, keepdim=True)
 
-        if output_mlm:
+        if output_mlm and isinstance(text_mask_ratio, float) and text_mask_ratio > 0.0:
             return image_features, text_features, self.logit_scale.exp(), mlm_logits, mlm_labels
 
         return image_features, text_features, self.logit_scale.exp()

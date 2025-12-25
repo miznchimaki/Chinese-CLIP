@@ -7,10 +7,10 @@ export CUDA_LAUNCH_BLOCKING=1
 GPUS_PER_NODE=${1:-8}
 
 # Number of GPU workers, for single-worker training, please set to 1
-WORKER_CNT=${2:-1}
+WORKER_CNT=${2:-4}
 
 # The ip address of the rank-0 worker, for single-worker training, please set to localhost
-MASTER_ADDR_VAR=${3:-localhost}
+MASTER_ADDR_VAR=${3:-192.168.100.66}
 export MASTER_ADDR=${MASTER_ADDR_VAR}
 
 # The port for communication
@@ -53,10 +53,10 @@ context_length=512
 warmup=18  # warmup ratio 0.01 is ok
 batch_size=512
 valid_batch_size=128
-accum_freq=4
-lr=8e-6  # learning rate 3e-6 is best for 1 node; 1.2e-5 is best for 4 nodes
+accum_freq=1
+lr=1e-5  # learning rate 3e-6 is best for 1 node; 1.2e-5 is best for 4 nodes
 # wd=0.001
-wd=0.003 # weight decay 0.001 is best
+wd=0.001 # weight decay 0.001 is best
 # epoch 1 is best
 max_epochs=1  # or you can alternatively specify --max-steps
 valid_step_interval=2000
@@ -96,5 +96,6 @@ python3 -m torch.distributed.launch --use_env --nproc_per_node=${GPUS_PER_NODE} 
           --grad-checkpointing \
           ${use_augment} \
           --text-model=${text_model} \
-          --text-mask-ratio=0.15 \
+          --text-mask-ratio=0.0 \
           --mlm-loss-weight=1.0
+

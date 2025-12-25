@@ -6,6 +6,7 @@ This script extracts image and text features for evaluation. (with single-GPU)
 import os
 import argparse
 import logging
+import warnings
 from pathlib import Path
 import json
 
@@ -156,7 +157,11 @@ if __name__ == "__main__":
     sd = checkpoint["state_dict"]
     if next(iter(sd.items()))[0].startswith('module'):
         sd = {k[len('module.'):]: v for k, v in sd.items() if "bert.pooler" not in k}
-    model.load_state_dict(sd)
+    missing_keys, unexpected_keys = model.load_state_dict(sd, strict=False)
+    if missing_keys:
+        warnings.warn(f'loading from checkpoint path `{args.resume}`, missied model weights: {missing_keys}')
+    if unexpected_keys:
+        warnings.warn(f'loading from checkpoint path `{args.resume}`, unexpected checkpoint weights: {unexpected_keys}')
     print(
         f"=> loaded checkpoint '{args.resume}' (epoch {checkpoint['epoch']} @ {checkpoint['step']} steps)"
     )

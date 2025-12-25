@@ -1,4 +1,5 @@
 from math import ceil
+import warnings
 import os
 import logging
 from pathlib import Path
@@ -219,7 +220,11 @@ def main():
             if args.use_flash_attention:
                 sd = convert_state_dict(sd)
             # Load the state dict
-            model.load_state_dict(sd)
+            missing_weights, unexpected_weights = model.load_state_dict(sd, strict=False)
+            if missing_weights:
+                warnings.warn(f'Weights in model cannot be initialized: {missing_weights}')
+            if unexpected_weights:
+                warnings.warn(f'Weights in pretrained dictionary are compatitable with model: {unexpected_weights}')
             # Restore the epoch and steps info, reload the dataset and dataloader for the resume epoch
             if not args.reset_data_offset:
                 start_epoch = checkpoint["epoch"]

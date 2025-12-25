@@ -36,11 +36,20 @@ def get_loss(
     mlm_loss_value = 0.0 if args.accum_freq != 1 else None
     mlm_logits = mlm_labels = None
     if args.accum_freq == 1:
-        model_output = model(images, texts, mask_ratio=args.mask_raio, output_mlm=output_mlm)
+        model_output = model(
+            images,
+            texts,
+            mask_ratio=args.mask_ratio,
+            text_mask_ratio=args.text_mask_ratio,
+            output_mlm=output_mlm
+        )
         image_features, text_features, logit_scale = model_output[0], model_output[1], model_output[2]
         if output_mlm:
             mlm_logits, mlm_labels = model_output[3], model_output[4]
-            mlm_loss_value = loss_mlm(mlm_logits, mlm_labels)
+            mlm_loss_value = loss_mlm(
+                mlm_logits.reshape(mlm_logits.shape[0] * mlm_logits.shape[1], mlm_logits.shape[-1]),
+                mlm_labels.reshape(-1)
+            )
 
         if args.distillation:
             with torch.no_grad():
@@ -56,12 +65,16 @@ def get_loss(
             images,
             texts,
             mask_ratio=args.mask_ratio,
+            text_mask_ratio=args.text_mask_ratio,
             output_mlm=output_mlm
         )
         chunk_image_features, chunk_text_features, logit_scale = model_output[0], model_output[1], model_output[2]
         if output_mlm:
             mlm_logits, mlm_labels = model_output[3], model_output[4]
-            mlm_loss_value += loss_mlm(mlm_logits, mlm_labels)
+            mlm_loss_value += loss_mlm(
+                mlm_logits.reshape(mlm_logits.shape[0] * mlm_logits.shape[1], mlm_logits.shape[-1]),
+                mlm_labels.reshape(-1)
+            )
 
         if args.distillation:
             with torch.no_grad():
@@ -142,7 +155,10 @@ def get_loss(
         loss_img(logits_per_image, ground_truth)
         + loss_txt(logits_per_text, ground_truth)
     ) / 2
-    if output_mlm and mlm_loss_value:
+    if output_mlm:
+        if not mlm_loss_value:
+            raise RuntimeError('when using masked language modeling, get an error mlm loss value: {mlm_loss_value}')
+        contrastive_loss = total_loss
         total_loss += args.mlm_loss_weight * mlm_loss_value
 
     acc = None
@@ -153,7 +169,10 @@ def get_loss(
     if args.distillation:
         total_loss += kd_loss * args.kd_loss_weight
 
-    return total_loss, acc
+    if not output_mlm:
+        return total_loss, acc, None, None
+    else:
+        return total_loss, acc, contrastive_loss, mlm_loss_value
 
 
 def freeze_vision_bn(args, model):
@@ -231,7 +250,7 @@ def train(
             if args.precision == "amp":
                 with autocast(device_type='cuda'):
                     if args.distillation:
-                        total_loss, acc = get_loss(
+                        total_loss, acc, contrastive_loss, mlm_loss = get_loss(
                             model,
                             images,
                             texts,
@@ -242,7 +261,7 @@ def train(
                             teacher_model=teacher_model
                         )
                     else:
-                        total_loss, acc = get_loss(
+                        total_loss, acc, contrastive_loss, mlm_loss = get_loss(
                             model,
                             images,
                             texts,
@@ -257,7 +276,7 @@ def train(
 
             else:
                 if args.distillation:
-                    total_loss, acc = get_loss(
+                    total_loss, acc, contrastive_loss, mlm_loss = get_loss(
                         model,
                         images,
                         texts,
@@ -268,7 +287,7 @@ def train(
                         teacher_model=teacher_model
                     )
                 else:
-                    total_loss, acc = get_loss(
+                    total_loss, acc, contrastive_loss, mlm_loss = get_loss(
                         model,
                         images,
                         texts,
@@ -314,7 +333,7 @@ def train(
                     # `total_loss` and `acc` are coarsely sampled, taking only the last result in the loop.
                     # Although each result should be the same in theory, it will be slightly different in practice
                     if args.distillation:
-                        total_loss, acc = get_loss(
+                        total_loss, acc, contrastive_loss, mlm_loss = get_loss(
                             model,
                             images,
                             texts,
@@ -329,7 +348,7 @@ def train(
                             teacher_accum_image_features=teacher_accum_image_features
                         )
                     else:
-                        total_loss, acc = get_loss(
+                        total_loss, acc, contrastive_loss, mlm_loss = get_loss(
                             model,
                             images,
                             texts,
@@ -372,18 +391,34 @@ def train(
             samples_per_epoch = dataloader.num_samples
             percent_complete = 100.0 * (i_accum + 1) / num_steps_per_epoch
 
-            logging.info(
-                f"Global Steps: {step + 1}/{args.max_steps} | " +
-                f"Train Epoch: {epoch + 1} [{num_samples}/{samples_per_epoch} ({percent_complete:.0f}%)] | " +
-                f"Loss: {total_loss.item():.6f} | " +
-                (f"Image2Text Acc: {acc['i2t'].item() * 100:.2f} | " if args.report_training_batch_acc else "") +
-                (f"Text2Image Acc: {acc['t2i'].item() * 100:.2f} | " if args.report_training_batch_acc else "") +
-                f"Data Time: {data_time:.3f}s | " +
-                f"Batch Time: {batch_time:.3f}s | " +
-                f"LR: {optimizer.param_groups[0]['lr']:5f} | " +
-                f"logit_scale: {m.logit_scale.data:.3f} | " +
-                f"Global Batch Size: {batch_size * args.world_size}"
-            )
+            if args.text_mask_ratio <= 0.0:
+                logging.info(
+                    f"Global Steps: {step + 1}/{args.max_steps} | " +
+                    f"Train Epoch: {epoch + 1} [{num_samples}/{samples_per_epoch} ({percent_complete:.0f}%)] | " +
+                    f"Loss: {total_loss.item():.6f} | " +
+                    (f"Image2Text Acc: {acc['i2t'].item() * 100:.2f} | " if args.report_training_batch_acc else "") +
+                    (f"Text2Image Acc: {acc['t2i'].item() * 100:.2f} | " if args.report_training_batch_acc else "") +
+                    f"Data Time: {data_time:.3f}s | " +
+                    f"Batch Time: {batch_time:.3f}s | " +
+                    f"LR: {optimizer.param_groups[0]['lr']:5f} | " +
+                    f"logit_scale: {m.logit_scale.data:.3f} | " +
+                    f"Global Batch Size: {batch_size * args.world_size}"
+                )
+            else:
+                logging.info(
+                    f"Global Steps: {step + 1}/{args.max_steps} | " +
+                    f"Train Epoch: {epoch + 1} [{num_samples}/{samples_per_epoch} ({percent_complete:.0f}%)] | " +
+                    f"Loss: {total_loss.item():.6f} | " +
+                    f"Contrastive Loss: {contrastive_loss.item():.6f} | " +
+                    f"Masked Language Modeling Loss: {mlm_loss.item():.6f}" +
+                    (f"Image2Text Acc: {acc['i2t'].item() * 100:.2f} | " if args.report_training_batch_acc else "") +
+                    (f"Text2Image Acc: {acc['t2i'].item() * 100:.2f} | " if args.report_training_batch_acc else "") +
+                    f"Data Time: {data_time:.3f}s | " +
+                    f"Batch Time: {batch_time:.3f}s | " +
+                    f"LR: {optimizer.param_groups[0]['lr']:5f} | " +
+                    f"logit_scale: {m.logit_scale.data:.3f} | " +
+                    f"Global Batch Size: {batch_size * args.world_size}"
+                )
 
         if args.val_data is not None and args.valid_step_interval is not None and ((step + 1) % args.valid_step_interval) == 0:
             assert "val" in data, "Error: Valid dataset has not been built."
