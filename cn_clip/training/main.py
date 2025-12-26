@@ -212,7 +212,7 @@ def main():
             )
             # Restore the model weight, map model to be loaded to specified single gpu.
             # loc = "cuda:{}".format(args.local_device_rank)
-            checkpoint = torch.load(args.resume, map_location="cpu")
+            checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
             sd = {k: v for k, v in checkpoint["state_dict"].items() if "bert.pooler" not in k}
             # Resize the positional embedding by interpolation, if needed
             resize_pos_embed(sd, model, prefix="module.")

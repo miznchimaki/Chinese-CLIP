@@ -29,6 +29,7 @@ setup(
                                         'cn_clip/clip/model_configs/ViT-L-14.json',
                                         'cn_clip/clip/model_configs/ViT-L-14-336.json',
                                         'cn_clip/clip/model_configs/ViT-H-14.json',
+                                        'cn_clip/clip/model_configs/ViT-H-14-336.json',
                                         'cn_clip/clip/model_configs/RN50.json',
                                         'cn_clip/clip/model_configs/RBT3-chinese.json'
                                         ]),

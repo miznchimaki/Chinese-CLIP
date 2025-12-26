@@ -5,7 +5,7 @@ def get_default_params(model_name):
     # Params from paper (https://arxiv.org/pdf/2103.00020.pdf)
     if model_name in ["RN50", "RN101", "RN50x4"]:
         return {"lr": 5.0e-4, "beta1": 0.9, "beta2": 0.999, "eps": 1.0e-8}
-    elif model_name in ["ViT-B-32", "ViT-B-16", "ViT-H-14"]:
+    elif model_name in ["ViT-B-32", "ViT-B-16", "ViT-H-14", "ViT-H-14-336"]:
         return {"lr": 5.0e-4, "beta1": 0.9, "beta2": 0.98, "eps": 1.0e-6}
     elif model_name in ["ViT-L-14", "ViT-L-14-336"]:
         return {"lr": 4.0e-4, "beta1": 0.9, "beta2": 0.98, "eps": 1.0e-6}
@@ -128,7 +128,7 @@ def parse_args():
     )
     parser.add_argument(
         "--vision-model",
-        choices=["ViT-B-32", "ViT-B-16", "ViT-L-14", "ViT-L-14-336", "ViT-H-14", "RN50"],
+        choices=["ViT-B-32", "ViT-B-16", "ViT-L-14", "ViT-L-14-336", "ViT-H-14", "RN50", "ViT-H-14-336"],
         default="ViT-B-16",
         help="Name of the vision backbone to use.",
     )
@@ -154,10 +154,10 @@ def parse_args():
     # VTM loss arguments
     parser.add_argument('--vtm-loss', action='store_true', help='whether use VTM (Vision Text Matching) loss for Chinese-CLIP finetuning')
     parser.add_argument('--vtm-loss-weight', default=1.0, type=float, help='VTM loss weight in total loss')
-    parser.add_argument('--vtm-hard-sample-ratio', default=0.2, type=float,
+    parser.add_argument('--vtm-hard-sample-ratio', default=None, type=float,
         help='hard negative samples ratio for VTM loss, will be covered by --vtm-hard-sample-num'
     )
-    parser.add_argument('--vtm-hard-sample-num', default=5, type=int, help='hard negative samples number for VTM loss')
+    parser.add_argument('--vtm-hard-sample-num', default=None, type=int, help='hard negative samples number for VTM loss')
 
     parser.add_argument(
         "--clip-weight-path",
