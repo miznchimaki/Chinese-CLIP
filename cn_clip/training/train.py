@@ -18,6 +18,7 @@ from cn_clip.clip.model import convert_state_dict
 def is_master(args):
     return args.rank == 0
 
+
 def get_loss(
     model,
     images,

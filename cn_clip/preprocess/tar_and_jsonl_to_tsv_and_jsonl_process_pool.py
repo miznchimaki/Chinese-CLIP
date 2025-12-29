@@ -48,7 +48,10 @@ def process_tar(tar_path, jsonl_data, tar_idx: int = 0, data_num_per_tar: int = 
                 with open(img_path, 'wb') as f:
                     f.write(img.read())
 
-                base64_img = image_to_base64(img_path)
+                try:
+                    base64_img = image_to_base64(img_path)
+                except Exception as _:
+                    continue
                 image_id += 1
                 image_data.append((image_id, base64_img))
 
@@ -121,3 +124,4 @@ if __name__ == "__main__":
     pool_size = min(args.pool_size, len(jsonl_files_p)) if args.pool_size else len(jsonl_files_p)
 
     main(jsonl_files_p, args.tar_dir, args.jsonl_dir, pool_size)
+
