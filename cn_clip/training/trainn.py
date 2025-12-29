@@ -1,0 +1,619 @@
+import os
+import time
+import json
+import logging
+import numpy as np
+from tqdm import tqdm
+import random
+
+import torch
+import torch.nn as nn
+from torch.amp import autocast
+import torch.distributed.nn
+import torch.distributed as dist
+import torch.nn.functional as F
+
+from cn_clip.clip.model import convert_state_dict
+
+
+def is_master(args):
+    return args.rank == 0
+
+
+def get_loss(
+    model,
+    images,
+    texts,
+    loss_img,
+    loss_txt,
+    args,
+    loss_mlm=None,
+    loss_vtm=None,
+    accum_image_features=None,
+    accum_text_features=None,
+    accum_idx=-1,
+    teacher_model=None,
+    teacher_accum_image_features=None
+):
+    output_mlm = isinstance(loss_mlm, nn.CrossEntropyLoss)
+    mlm_loss_value = 0.0 if args.accum_freq != 1 else None
+    mlm_logits = mlm_labels = None
+    if args.accum_freq == 1:
+        model_output = model(
+            images,
+            texts,
+            mask_ratio=args.mask_ratio,
+            text_mask_ratio=args.text_mask_ratio,
+            output_mlm=output_mlm
+        )
+        image_features, text_features, logit_scale = model_output[0], model_output[1], model_output[2]
+        if output_mlm:
+            mlm_logits, mlm_labels = model_output[3], model_output[4]
+            mlm_loss_value = loss_mlm(
+                mlm_logits.reshape(mlm_logits.shape[0] * mlm_logits.shape[1], mlm_logits.shape[-1]),
+                mlm_labels.reshape(-1)
+            )
+
+        if args.distillation:
+            with torch.no_grad():
+                # different teacher model has different output
+                output = teacher_model.module.get_feature(images)
+                if(isinstance(output, tuple)):
+                    teacher_image_features = output[0]
+                else:
+                    teacher_image_features = output
+    else:
+        assert accum_image_features and accum_text_features and accum_idx != -1
+        model_output = model(
+            images,
+            texts,
+            mask_ratio=args.mask_ratio,
+            text_mask_ratio=args.text_mask_ratio,
+            output_mlm=output_mlm
+        )
+        chunk_image_features, chunk_text_features, logit_scale = model_output[0], model_output[1], model_output[2]
+        if output_mlm:
+            mlm_logits, mlm_labels = model_output[3], model_output[4]
+            mlm_loss_value += loss_mlm(
+                mlm_logits.reshape(mlm_logits.shape[0] * mlm_logits.shape[1], mlm_logits.shape[-1]),
+                mlm_labels.reshape(-1)
+            )
+
+        if args.distillation:
+            with torch.no_grad():
+                # different teacher model has different output
+                output = teacher_model.module.get_feature(images)
+                if(isinstance(output, tuple)):
+                    teacher_chunk_image_features = output[0]
+                else:
+                    teacher_chunk_image_features = output
+            teacher_image_features = torch.cat(
+            teacher_accum_image_features[:accum_idx] + [teacher_chunk_image_features] + teacher_accum_image_features[accum_idx + 1:])
+
+        image_features = torch.cat(
+            accum_image_features[:accum_idx] + [chunk_image_features] + accum_image_features[accum_idx + 1:])
+        text_features = torch.cat(
+            accum_text_features[:accum_idx] + [chunk_text_features] + accum_text_features[accum_idx + 1:])
+    logit_scale = logit_scale.mean()
+    if args.aggregate:
+        world_size = dist.get_world_size()
+        rank = dist.get_rank()
+
+        # We gather tensors from all gpus to get more negatives to contrast with.
+        if args.gather_with_grad:
+            all_image_features = torch.cat(torch.distributed.nn.all_gather(image_features), dim=0)
+            all_text_features = torch.cat(torch.distributed.nn.all_gather(text_features), dim=0)
+
+            if args.distillation:
+                all_teacher_image_features = torch.cat(torch.distributed.nn.all_gather(teacher_image_features), dim=0)
+        else:
+            gathered_image_features = [
+                torch.zeros_like(image_features) for _ in range(world_size)
+            ]
+            gathered_text_features = [
+                torch.zeros_like(text_features) for _ in range(world_size)
+            ]
+
+            dist.all_gather(gathered_image_features, image_features)
+            dist.all_gather(gathered_text_features, text_features)
+
+            all_image_features = torch.cat(
+                [image_features]
+                + gathered_image_features[:rank]
+                + gathered_image_features[rank + 1 :]
+            )
+            all_text_features = torch.cat(
+                [text_features]
+                + gathered_text_features[:rank]
+                + gathered_text_features[rank + 1 :]
+            )
+
+        # this is needed to send gradients back everywhere.
+        logits_per_image = logit_scale * all_image_features @ all_text_features.t()
+        logits_per_text = logits_per_image.t()
+
+        if args.distillation:
+            gathered_teacher_image_features = [
+                torch.zeros_like(teacher_image_features) for _ in range(world_size)
+            ]
+            dist.all_gather(gathered_teacher_image_features, teacher_image_features)
+            all_teacher_image_features = torch.cat(
+                [teacher_image_features]
+                + gathered_teacher_image_features[:rank]
+                + gathered_teacher_image_features[rank + 1 :]
+            )
+            kd_loss = cosineSimilarityLoss(all_teacher_image_features, all_image_features)
+
+    else:
+        logits_per_image = logit_scale * image_features @ text_features.t()
+        logits_per_text = logit_scale * text_features @ image_features.t()
+        if args.vtm_loss:
+            all_image_features = image_features
+            all_text_features = text_features
+
+        if args.distillation:
+            kd_loss = cosineSimilarityLoss(teacher_image_features, image_features)
+
+    # VTM (Vision Text Matching) loss with hard negative samples caculation
+    vtm_loss_value = None
+    if args.vtm_loss:
+        with torch.no_grad():  # get hard negative image & text indices without gradient record
+            bsz = logits_per_image.shape[0]
+            if args.vtm_hard_sample_ratio:
+                vtm_hard_sample_num = int(bsz * args.vtm_hard_sample_ratio)
+            else:
+                vtm_hard_sample_num = args.vtm_hard_sample_num
+            cur_device = logits_per_image.device
+            bsz_ids = torch.arange(bsz, dtype=torch.int, device=cur_device)
+            i2t_logits_wo_self = logits_per_image.clone().detach()
+            i2t_logits_wo_self[bsz_ids, bsz_ids] = (-1) * torch.inf
+
+            _, neg_txt_ids = torch.topk(i2t_logits_wo_self, vtm_hard_sample_num, dim=1, largest=True, sorted=False)
+            neg_txt_ids = torch.tensor(
+                [random.choice(neg_ids_per_img).item() for neg_ids_per_img in neg_txt_ids],
+                dtype=torch.int,
+                device=cur_device
+            )
+
+            t2i_logits_wo_self = logits_per_text.clone().detach()
+            t2i_logits_wo_self[bsz_ids, bsz_ids] = (-1) * torch.inf
+            _, neg_img_ids = torch.topk(t2i_logits_wo_self, vtm_hard_sample_num, dim=1, largest=True, sorted=False)
+            neg_img_ids = torch.tensor(
+                [random.choice(neg_ids_per_txt).item() for neg_ids_per_txt in neg_img_ids],
+                dtype=torch.int,
+                device=cur_device
+            )
+
+        if not loss_vtm:
+            loss_vtm = nn.CrossEntropyLoss()
+        vtm_labels = torch.zeros((bsz, ), dtype=torch.long, device=cur_device)
+        vtm_head = model.module.vtm_head
+
+        neg_txt_features = all_text_features[bsz_ids, neg_txt_ids]  # (bsz, txt_hidden_size)
+        vtm_i2t_features = torch.cat(
+            (all_image_features, neg_txt_features),
+            dim=-1
+        )  # (bsz, img_hidden_size + txt_hidden_size)
+        vtm_i2t_logits = vtm_head(vtm_i2t_features)
+        vtm_i2t_loss = loss_vtm(vtm_i2t_logits, vtm_labels)
+
+        neg_img_features = all_image_features[bsz_ids, neg_img_ids]  # (bsz, img_hidden_size)
+        vtm_t2i_features = torch.cat(
+            (neg_img_features, all_text_features),
+            dim=-1
+        )  # (bsz, img_hidden_size + txt_hidden_size)
+        vtm_t2i_logits = vtm_head(vtm_t2i_features)
+        vtm_t2i_loss = loss_vtm(vtm_t2i_logits, vtm_labels)
+        vtm_loss_value = (vtm_i2t_loss + vtm_t2i_loss) / 2
+
+    ground_truth = torch.arange(len(logits_per_image)).long()
+    ground_truth = ground_truth.cuda(args.local_device_rank, non_blocking=True)
+
+    total_loss = (
+        loss_img(logits_per_image, ground_truth)
+        + loss_txt(logits_per_text, ground_truth)
+    ) / 2
+    if output_mlm or args.vtm_loss:
+        contrastive_loss = total_loss
+    if output_mlm:
+        if not mlm_loss_value:
+            raise RuntimeError('when using masked language modeling, get an error mlm loss value: {mlm_loss_value}')
+        total_loss += args.mlm_loss_weight * mlm_loss_value
+    if args.vtm_loss:
+        if not vtm_loss_value:
+            raise RuntimeError(f'when using vision-text matching binary loss, get an error vtm loss value: {vtm_loss_value}')
+        total_loss += args.vtm_loss_weight * vtm_loss_value
+
+    acc = None
+    if args.report_training_batch_acc:
+        i2t_acc = (logits_per_image.argmax(-1) == ground_truth).sum() / len(logits_per_image)
+        t2i_acc = (logits_per_text.argmax(-1) == ground_truth).sum() / len(logits_per_text)
+        acc = {"i2t": i2t_acc, "t2i": t2i_acc}
+    if args.distillation:
+        total_loss += kd_loss * args.kd_loss_weight
+
+    # total_loss, accuracy, contrastive_loss, vtm_loss, mlm_loss
+    if not (output_mlm or args.vtm_loss):  # only contrastive loss
+        return total_loss, acc, None, None, None
+    elif output_mlm and (not args.vtm_loss):  # contrastive loss & mlm loss
+        return total_loss, acc, contrastive_loss, None, mlm_loss_value
+    elif args.vtm_loss and (not output_mlm):  # contrastive loss & vtm loss
+        return total_loss, acc, contrastive_loss, vtm_loss_value, None
+    else:  # contrastive, vtm, and mlm loss
+        return total_loss, acc, contrastive_loss, vtm_loss_value, mlm_loss_value
+
+
+def freeze_vision_bn(args, model):
+    # freeze bn running mean and variance
+    if 'RN' in args.vision_model:
+        RN_visual_modules = model.module.visual.modules() if isinstance(model, nn.parallel.DistributedDataParallel) else model.visual.modules()
+        for m in RN_visual_modules:
+            if isinstance(m, nn.BatchNorm2d):
+                m.eval()
+
+
+def train(
+    model,
+    data,
+    epoch,
+    optimizer,
+    scaler,
+    scheduler,
+    args,
+    global_trained_steps,
+    teacher_model=None
+):
+    # os.environ["WDS_EPOCH"] = str(epoch)
+
+    model.train()
+    if args.freeze_vision:
+        freeze_vision_bn(args, model)
+
+    dataloader, sampler = data['train'].dataloader,  data['train'].sampler
+
+    loss_img = nn.CrossEntropyLoss()
+    loss_txt = nn.CrossEntropyLoss()
+
+    loss_img = loss_img.cuda(args.local_device_rank)
+    loss_txt = loss_txt.cuda(args.local_device_rank)
+
+    if sampler is not None:
+        sampler.set_epoch(epoch)
+
+    num_steps_per_epoch = dataloader.num_batches // args.accum_freq
+    data_iter = iter(dataloader)
+
+    if args.accum_freq > 1:
+        accum_images, accum_texts, accum_image_features, accum_text_features = [], [], [], []
+        if args.distillation:
+            teacher_accum_image_features = []
+
+    end = time.time()
+    epoch_trained_steps = 0
+    for i in range(0, dataloader.num_batches):
+        batch = next(data_iter)
+
+        i_accum = i // args.accum_freq
+        step = num_steps_per_epoch * epoch + i_accum
+        # reach the args.max_steps, exit training:
+        if step >= args.max_steps:
+            logging.info("Stopping training due to step {} has reached max_steps {}".format(step, args.max_steps // args.accum_freq))
+            return epoch_trained_steps
+        scheduler(step)
+
+        optimizer.zero_grad()
+
+        images, texts, eos_indices = batch
+
+        images = images.cuda(args.local_device_rank, non_blocking=True)
+        texts = texts.cuda(args.local_device_rank, non_blocking=True)
+        eos_indices = eos_indices.cuda(args.local_device_rank, non_blocking=True)
+
+        data_time = time.time() - end
+
+        m = model.module
+
+        if args.accum_freq == 1:
+            # with automatic mixed precision.
+            if args.precision == "amp":
+                with autocast(device_type='cuda'):
+                    if args.distillation:
+                        total_loss, acc, contrastive_loss, vtm_loss, mlm_loss = get_loss(
+                            model,
+                            images,
+                            texts,
+                            loss_img,
+                            loss_txt,
+                            args,
+                            loss_mlm=nn.CrossEntropyLoss() if args.text_mask_ratio > 0.0 else None,
+                            loss_vtm=nn.CrossEntropyLoss() if args.vtm_loss else None,
+                            teacher_model=teacher_model
+                        )
+                    else:
+                        total_loss, acc, contrastive_loss, vtm_loss, mlm_loss = get_loss(
+                            model,
+                            images,
+                            texts,
+                            loss_img,
+                            loss_txt,
+                            args,
+                            loss_mlm=nn.CrossEntropyLoss() if args.text_mask_ratio > 0.0 else None,
+                            loss_vtm=nn.CrossEntropyLoss() if args.vtm_loss else None
+                        )
+                    scaler.scale(total_loss).backward()
+                    scaler.step(optimizer)
+                scaler.update()
+
+            else:
+                if args.distillation:
+                    total_loss, acc, contrastive_loss, vtm_loss, mlm_loss = get_loss(
+                        model,
+                        images,
+                        texts,
+                        loss_img,
+                        loss_txt,
+                        args,
+                        loss_mlm=nn.CrossEntropyLoss() if args.text_mask_ratio > 0.0 else None,
+                        loss_vtm=nn.CrossEntropyLoss() if args.vtm_loss else None,
+                        teacher_model=teacher_model
+                    )
+                else:
+                    total_loss, acc, contrastive_loss, vtm_loss, mlm_loss = get_loss(
+                        model,
+                        images,
+                        texts,
+                        loss_img,
+                        loss_txt,
+                        args,
+                        loss_mlm=nn.CrossEntropyLoss() if args.text_mask_ratio > 0.0 else None,
+                        loss_vtm=nn.CrossEntropyLoss() if args.vtm_loss else None
+                    )
+                total_loss.backward()
+                optimizer.step()
+        else:
+            # First, cache the features without any gradient tracking.
+            with torch.no_grad():
+                with autocast(device_type='cuda', enabled=(args.precision == "amp")):
+                    chunk_image_features, chunk_text_features, _ = model(images, texts)
+                if args.distillation:
+                    output = teacher_model.module.get_feature(images)
+                    if(len(output) == 2):
+                        teacher_chunk_image_features = output[0]
+                    else:
+                        teacher_chunk_image_features = output
+                accum_image_features.append(chunk_image_features)
+                accum_text_features.append(chunk_text_features)
+                if args.distillation:
+                    teacher_accum_image_features.append(teacher_chunk_image_features)
+
+                accum_images.append(images)
+                accum_texts.append(texts)
+
+            # If (i + 1) % accum_freq is not zero, move on to the next batch.
+            if ((i + 1) % args.accum_freq) > 0:
+                # FIXME this makes data time logging unreliable when accumulating
+                continue
+
+            # Now, ready to take gradients for the last accum_freq batches.
+            # Re-do the forward pass for those batches, and use the cached features from the other batches as negatives.
+            # Call backwards each time, but only step optimizer at the end.
+            optimizer.zero_grad()
+            for j in range(args.accum_freq):
+                images = accum_images[j]
+                texts = accum_texts[j]
+                with autocast(device_type='cuda', enabled=(args.precision == "amp")):
+                    # `total_loss` and `acc` are coarsely sampled, taking only the last result in the loop.
+                    # Although each result should be the same in theory, it will be slightly different in practice
+                    if args.distillation:
+                        total_loss, acc, contrastive_loss, vtm_loss, mlm_loss = get_loss(
+                            model,
+                            images,
+                            texts,
+                            loss_img,
+                            loss_txt,
+                            args,
+                            loss_mlm=nn.CrossEntropyLoss() if args.text_mask_ratio > 0.0 else None,
+                            loss_vtm=nn.CrossEntropyLoss() if args.vtm_loss else None,
+                            accum_image_features=accum_image_features,
+                            accum_text_features=accum_text_features,
+                            accum_idx=j,
+                            teacher_model=teacher_model,
+                            teacher_accum_image_features=teacher_accum_image_features
+                        )
+                    else:
+                        total_loss, acc, contrastive_loss, vtm_loss, mlm_loss = get_loss(
+                            model,
+                            images,
+                            texts,
+                            loss_img,
+                            loss_txt,
+                            args,
+                            loss_mlm=nn.CrossEntropyLoss() if args.text_mask_ratio > 0.0 else None,
+                            loss_vtm=nn.CrossEntropyLoss() if args.vtm_loss else None,
+                            accum_image_features=accum_image_features,
+                            accum_text_features=accum_text_features,
+                            accum_idx=j
+                        )
+                if args.precision == "amp":
+                    scaler.scale(total_loss).backward()
+                else:
+                    total_loss.backward()
+
+            if args.precision == "amp":
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
+
+        # reset gradient accum, if enabled
+        if args.accum_freq > 1:
+            accum_images, accum_texts, accum_image_features, accum_text_features = [], [], [], []
+            if args.distillation:
+                teacher_accum_image_features = []
+
+        # Note: we clamp to 4.6052 = ln(100), as in the original paper.
+        m.logit_scale.data = torch.clamp(m.logit_scale.data, 0, 4.6052)
+
+        batch_time = time.time() - end
+        end = time.time()
+
+        epoch_trained_steps += 1
+
+        if is_master(args) and ((step + 1) % args.log_interval) == 0:
+            batch_size = len(images) * args.accum_freq
+            num_samples = (i_accum + 1) * batch_size * args.world_size
+            samples_per_epoch = dataloader.num_samples
+            percent_complete = 100.0 * (i_accum + 1) / num_steps_per_epoch
+
+            pre_log_str = f'Global Steps: {step + 1}/{args.max_steps} | ' + \
+                          f'Train Epoch: {epoch + 1} [{num_samples}/{samples_per_epoch} ({percent_complete:.0f}%)] | ' + \
+                          f'Loss: {total_loss.item():.6f} | '
+            post_log_str = (f"Image2Text Acc: {acc['i2t'].item() * 100:.2f} | " if args.report_training_batch_acc else "") + \
+                           (f"Text2Image Acc: {acc['t2i'].item() * 100:.2f} | " if args.report_training_batch_acc else "") + \
+                           f'Data Time: {data_time:.3f}s | ' + \
+                           f'Batch Time: {batch_time:.3f}s | ' + \
+                           f'LR: {optimizer.param_groups[0]["lr"]:5f} | ' + \
+                           f'logit_scale: {m.logit_scale.data:.3f} | ' + \
+                           f'Global Batch Size: {batch_size * args.world_size}'
+            loss_log_str = ''
+            if vtm_loss or mlm_loss:
+                loss_log_str += f'Contrastive Loss: {contrastive_loss.item():.6f} | '
+                if vtm_loss:
+                    loss_log_str += f'Vision-Text Matching Loss: {vtm_loss.item():.6f} | '
+                if mlm_loss:
+                    loss_log_str += f'Masked Language Modeling Loss: {mlm_loss.item():.6f}'
+            log_str = pre_log_str + loss_log_str + post_log_str
+            logging.info(log_str)
+
+        if args.val_data is not None and args.valid_step_interval is not None and ((step + 1) % args.valid_step_interval) == 0:
+            assert "val" in data, "Error: Valid dataset has not been built."
+            if not args.use_flash_attention:
+                evaluate(model, data, epoch, args, step + 1)
+            else:
+                # fp16 is needed in flash attention
+                with autocast(device_type='cuda'):
+                    evaluate(model, data, epoch, args, step + 1)
+            # set model back to train mode
+            model.train()
+            if args.freeze_vision:
+                freeze_vision_bn(args, model)
+
+        if args.should_save and args.save_step_frequency > 0 and ((step + 1) % args.save_step_frequency) == 0:
+            save_path = os.path.join(args.checkpoint_path, f"epoch_{epoch + 1}_{step + 1}.pt")
+            t1 = time.time()
+            torch.save(
+                {
+                    "epoch": epoch + 1,
+                    "step": step + 1,
+                    "name": args.name,
+                    "state_dict": model.state_dict() if not args.use_flash_attention else convert_state_dict(model.state_dict()),
+                    "optimizer": optimizer.state_dict(),
+                },
+                save_path,
+            )
+            logging.info("Saved checkpoint {} (epoch {} @ {} steps) (writing took {} seconds)".format(save_path, epoch + 1, step + 1, time.time() - t1))
+
+            # Save the latest params
+            t1 = time.time()
+            save_path = os.path.join(args.checkpoint_path, f"epoch_latest.pt")
+            torch.save(
+                {
+                    "epoch": epoch + 1,
+                    "step": step + 1,
+                    "name": args.name,
+                    "state_dict": model.state_dict() if not args.use_flash_attention else convert_state_dict(model.state_dict()),
+                    "optimizer": optimizer.state_dict(),
+                },
+                save_path,
+            )
+            logging.info("Saved checkpoint {} (epoch {} @ {} steps) (writing took {} seconds)".format(save_path, epoch + 1, step + 1, time.time() - t1))
+    return epoch_trained_steps
+
+
+def evaluate(model, data, epoch, args, steps):
+
+    logging.info("Begin to eval on validation set (epoch {} @ {} steps)...".format(epoch + 1, steps))
+
+    model.eval()
+    model.text_mask_ratio = 0.0
+
+    dataloader = data['val'].dataloader
+    data_iter = iter(dataloader)
+
+    loss_img = nn.CrossEntropyLoss()
+    loss_txt = nn.CrossEntropyLoss()
+
+    loss_img = loss_img.cuda(args.local_device_rank)
+    loss_txt = loss_txt.cuda(args.local_device_rank)
+
+    cumulative_loss = torch.zeros([]).cuda(args.local_device_rank, non_blocking=True)
+    cumulative_i2t_acc = torch.zeros([]).cuda(args.local_device_rank, non_blocking=True)
+    cumulative_t2i_acc = torch.zeros([]).cuda(args.local_device_rank, non_blocking=True)
+    num_elements = torch.zeros([]).cuda(args.local_device_rank, non_blocking=True)
+    all_image_features, all_text_features = [], []
+    with torch.no_grad():
+        for i in range(dataloader.num_batches):
+            batch = next(data_iter)
+            images, texts, eos_indices = batch
+
+            images = images.cuda(args.local_device_rank, non_blocking=True)
+            texts = texts.cuda(args.local_device_rank, non_blocking=True)
+            eos_indices = eos_indices.cuda(args.local_device_rank, non_blocking=True)
+
+            image_features, text_features, logit_scale = model(images, texts)
+            all_image_features.append(image_features)
+            all_text_features.append(text_features)
+            logit_scale = logit_scale.mean()
+            logits_per_image = logit_scale * image_features @ text_features.t()
+            logits_per_text = logits_per_image.t()
+
+            ground_truth = torch.arange(len(images)).long()
+            ground_truth = ground_truth.cuda(args.local_device_rank, non_blocking=True)
+            total_loss = (
+                loss_img(logits_per_image, ground_truth)
+                + loss_txt(logits_per_text, ground_truth)
+            ) / 2
+
+            batch_size = len(images)
+            cumulative_loss += total_loss * batch_size
+            num_elements += batch_size
+
+            cumulative_i2t_acc += ((logits_per_image.argmax(-1) == ground_truth).sum()).float()
+            cumulative_t2i_acc += (logits_per_text.argmax(-1) == ground_truth).sum().float()
+
+            if (i + 1) % 100 == 0:
+                logging.info("Evaluated {}/{} batches...".format(i + 1, dataloader.num_batches))
+
+        dist.all_reduce(cumulative_loss, op=dist.ReduceOp.SUM)
+        dist.all_reduce(cumulative_i2t_acc, op=dist.ReduceOp.SUM)
+        dist.all_reduce(cumulative_t2i_acc, op=dist.ReduceOp.SUM)
+        dist.all_reduce(num_elements, op=dist.ReduceOp.SUM)
+        loss = cumulative_loss / num_elements
+        i2t_acc = cumulative_i2t_acc / num_elements
+        t2i_acc = cumulative_t2i_acc / num_elements
+
+        assert num_elements.item() == dataloader.num_samples # sanity check
+
+        logging.info(
+            f"Validation Result (epoch {epoch + 1} @ {steps} steps) | "
+            f"Valid Loss: {loss.item():.6f} | "
+            f"Image2Text Acc: {i2t_acc.item() * 100:.2f} | " 
+            f"Text2Image Acc: {t2i_acc.item() * 100:.2f} | " 
+            f"logit_scale: {model.module.logit_scale.data:.3f} | "
+            f"Valid Batch Size: {batch_size}"
+        )
+
+def cosineSimilarityLoss(feature1, feature2):
+    scale_factor_h = feature1.shape[0] / feature2.size(0)
+    scale_factor_w = feature1.shape[1] / feature2.size(1)
+
+    feature2_interpolated = F.interpolate(feature2.unsqueeze(0).unsqueeze(0),
+                            size=(feature1.shape[0], feature1.shape[1]),
+                            mode='bilinear',
+                            align_corners=False)
+    feature2_interpolated = feature2_interpolated.squeeze(0).squeeze(0)
+    
+
+    cosine_sim = F.cosine_similarity(feature1, feature2_interpolated, dim=1)
+    similarity_loss = 1 - cosine_sim.mean()
+    return similarity_loss
