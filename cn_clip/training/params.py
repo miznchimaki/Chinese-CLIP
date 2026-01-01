@@ -245,6 +245,17 @@ def parse_args():
         default=0.5,
         help="Weight of KD loss."
     )
+    parser.add_argument(
+        '--use-siglip',
+        action='store_true',
+        help='use SigLip or FG-CLIP for training or evaluation'
+    )
+    parser.add_argument(
+        '--pretrained-siglip-path',
+        type=str,
+        default=None,
+        help='pretrained SigLIP model weights path'
+    )
     args = parser.parse_args()
     args.aggregate = not args.skip_aggregate
 
