@@ -9,9 +9,7 @@ conda activate qwen3vl
 DATAPATH=${HOME}/projects/Chinese-CLIP
 device=${1:-'0'}
 split=${2:-'test'}
-# dataset_name=${3:-'concat_wukong_zero_aic_and_aic_and_coco'}
-# dataset_name=${3:-'Flickr30k-CN'}
-dataset_name=${3:-'COCO-CN-2'}
+dataset_name=${3:-'Test1000'}
 exp_name=${4:-'coco_2_finetune_vit_large_336_lr_9e-6_bs512_epochs10_gradaccum_1_wd0.001_warmup_4_gpu8_nodes4'}
 resume_ckpt_name=${5:-'epoch10.pt'}
 

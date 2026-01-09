@@ -7,10 +7,10 @@ export CUDA_LAUNCH_BLOCKING=1
 GPUS_PER_NODE=${1:-8}
 
 # Number of GPU workers, for single-worker training, please set to 1
-WORKER_CNT=${2:-4}
+WORKER_CNT=${2:-1}
 
 # The ip address of the rank-0 worker, for single-worker training, please set to localhost
-MASTER_ADDR_VAR=${3:-192.168.100.66}
+MASTER_ADDR_VAR=${3:-192.168.100.70}
 export MASTER_ADDR=${MASTER_ADDR_VAR}
 
 # The port for communication
@@ -30,17 +30,19 @@ conda activate qwen3vl
 export PYTHONPATH=${PYTHONPATH}:`pwd`/cn_clip/
 
 # data options
-# train_data=${DATAPATH}/datasets/concat_laion_cn_wukong_zero_aic_and_aic_coco/lmdb/train
-# val_data=${DATAPATH}/datasets/concat_laion_cn_wukong_zero_aic_and_aic_coco/lmdb/test # if val_data is not specified, the validation will be automatically disabled
-# train_data=${DATAPATH}/datasets/aic-filter-105w-zh-multi-caps-1/lmdb/train
-# val_data=${DATAPATH}/datasets/aic-filter-105w-zh-multi-caps-1/lmdb/test
+# train_data=${DATAPATH}/datasets/Flickr30k-CN/lmdb/train
+# val_data=${DATAPATH}/datasets/Flickr30k-CN/lmdb/test # if val_data is not specified, the validation will be automatically disabled
+# train_data=${DATAPATH}/datasets/COCO-CN-2/lmdb/train
+# val_data=${DATAPATH}/datasets/COCO-CN-2/lmdb/test
+# train_data=${DATAPATH}/datasets/aic-filter-105w-zh-multi-caps-2/lmdb/train
+# val_data=${DATAPATH}/datasets/aic-filter-105w-zh-multi-caps-2/lmdb/test
 train_data=${DATAPATH}/datasets/concat_wukong_zero_aic_and_aic_and_coco/lmdb/train
 val_data=${DATAPATH}/datasets/concat_wukong_zero_aic_and_aic_and_coco/lmdb/test
 
 # restore options
 # resume=${DATAPATH}/pretrained_weights/chinese-clip-vit-large-patch14-336px/clip_cn_vit-l-14-336.pt  # or specify your customed ckpt path to resume
-resume=${DATAPATH}/pretrained_weights/chinese-clip-vit-huge-patch14/clip_cn_vit-h-14.pt
-# resume=${DATAPATH}/experiments/concat_wukong_zero_aic_and_aic_and_coco_finetune_vit_large_336_lr_9e-6_bs512_epochs1_gradaccum_4_wd0.001_warmup_10_gpu8_nodes1/checkpoints/epoch1.pt
+# resume=${DATAPATH}/pretrained_weights/chinese-clip-vit-huge-patch14/clip_cn_vit-h-14.pt
+resume=${DATAPATH}/experiments/concat_wukong_zero_aic_and_aic_and_coco_finetune_vit_large_336_lr_9e-6_bs512_epochs1_gradaccum_4_wd0.001_warmup_10_gpu8_nodes1/checkpoints/epoch1.pt
 reset_data_offset="--reset-data-offset"
 reset_optimizer="--reset-optimizer"
 # reset_optimizer=""
@@ -56,24 +58,28 @@ report_training_batch_acc="--report-training-batch-acc"
 # training hyper-params
 context_length=512
 # warmup=100
-warmup=10  # warmup ratio 0.01 is ok
-batch_size=256
+warmup=0  # warmup ratio 0.01 is ok
+batch_size=512
 valid_batch_size=128
-accum_freq=2
-lr=6e-6  # learning rate 3e-6 is best for 1 node; 1.2e-5 is best for 4 nodes
+accum_freq=1
+lr=9e-6  # learning rate 3e-6 is best for 1 node; 1.2e-5 is best for 4 nodes
 # wd=0.001
 wd=0.001 # weight decay 0.001 is best
 # epoch 1 is best
-max_epochs=1  # or you can alternatively specify --max-steps
+max_epochs=200  # or you can alternatively specify --max-steps
 valid_step_interval=2000
 valid_epoch_interval=1
-# vision_model=ViT-L-14-336
-vision_model=ViT-H-14-336
-# text_model=RoBERTa-wwm-ext-base-chinese
-text_model=RoBERTa-wwm-ext-large-chinese
+vision_model=ViT-L-14-336
+# vision_model=ViT-H-14-336
+text_model=RoBERTa-wwm-ext-base-chinese
+# text_model=RoBERTa-wwm-ext-large-chinese
 use_augment="--use-augment"
 # use_augment=""
-name=concat_wukong_zero_aic_and_aic_and_coco_vit_huge_336_lr_${lr}_bs${batch_size}_epochs${max_epochs}_gradaccum_${accum_freq}_wd${wd}_warmup_${warmup}_gpu${GPUS_PER_NODE}_nodes${WORKER_CNT}
+# name=aic_multi_caps_2_no_noise_finetune_vit_large_336_lr_${lr}_bs${batch_size}_epochs${max_epochs}_gradaccum_${accum_freq}_wd${wd}_warmup_${warmup}_gpu${GPUS_PER_NODE}_nodes${WORKER_CNT}
+# name=flickr30k_finetune_vit_large_336_lr_${lr}_bs${batch_size}_epochs${max_epochs}_gradaccum_${accum_freq}_wd${wd}_warmup_${warmup}_gpu${GPUS_PER_NODE}_nodes${WORKER_CNT}
+# name=coco_finetune_vit_large_336_lr_${lr}_bs${batch_size}_epochs${max_epochs}_gradaccum_${accum_freq}_wd${wd}_warmup_${warmup}_gpu${GPUS_PER_NODE}_nodes${WORKER_CNT}
+# name=coco_2_finetune_vit_large_336_lr_${lr}_bs${batch_size}_epochs${max_epochs}_gradaccum_${accum_freq}_wd${wd}_warmup_${warmup}_gpu${GPUS_PER_NODE}_nodes${WORKER_CNT}
+name=debug
 
 python3 -m torch.distributed.launch --use_env --nproc_per_node=${GPUS_PER_NODE} --nnodes=${WORKER_CNT} --node_rank=${RANK} \
           --master_addr=${MASTER_ADDR} --master_port=${MASTER_PORT} cn_clip/training/main.py \
@@ -103,5 +109,4 @@ python3 -m torch.distributed.launch --use_env --nproc_per_node=${GPUS_PER_NODE} 
           ${use_augment} \
           --text-model=${text_model} \
           --text-mask-ratio=0.0 \
-          --mlm-loss-weight=1.0
-
+          --mlm-loss-weight=1.0 \
